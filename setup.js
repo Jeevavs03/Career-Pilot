@@ -63,7 +63,7 @@ if (mongoRunning) {
     console.log('   📥 Installing MongoDB...');
     run('sudo apt-get update && sudo apt-get install -y gnupg curl', { ignore: true });
     run('curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb-server-7.0.gpg', { ignore: true });
-    run('echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list', { ignore: true });
+    run('echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list', { ignore: true });
     run('sudo apt-get update && sudo apt-get install -y mongodb-org', { ignore: true });
     run('sudo systemctl start mongod && sudo systemctl enable mongod', { ignore: true });
   } else if (isMac) {
