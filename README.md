@@ -81,25 +81,28 @@ ollama pull nomic-embed-text
 git clone https://github.com/Jeevavs03/Career-Pilot.git
 cd Career-Pilot
 
-# 2. Install dependencies
-cd backend && npm install && cd ../frontend && npm install && cd ..
+# 2. Run automated setup (installs everything)
+node setup.js
 
-# 3. Install Playwright browsers
-cd backend && npx playwright install chromium && cd ..
-
-# 4. Copy environment file
-cp .env.example .env
-
-# 5. Start essential services (MongoDB, Redis, Ollama)
+# 3. Start essential services (MongoDB, Redis, Ollama)
 node services.js
 
-# 6. Pull AI models (required)
+# 4. Pull AI models (required)
 ollama pull llama3
 ollama pull nomic-embed-text
 
-# 7. Start the application (Backend + Frontend)
+# 5. Start the application (Backend + Frontend)
 node start.js
 ```
+
+The `setup.js` script will automatically:
+- Detect your OS (Linux/macOS/Windows)
+- Install MongoDB, Redis, Ollama (on Linux/macOS)
+- Pull required AI models
+- Install Node.js dependencies (backend + frontend)
+- Install Playwright Chromium
+- Create `.env` with correct `HARDWARE_MODE` for your RAM
+- Update `services.js` for your OS
 
 > **Note:** On first run, the auto-pilot will scrape jobs → filter via regex → deep-screen each job through Llama3. On 16GB RAM this takes ~1-2 min for 30 jobs. On 8GB RAM it's significantly slower.
 
