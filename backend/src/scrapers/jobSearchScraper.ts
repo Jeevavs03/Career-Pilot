@@ -344,9 +344,71 @@ export class JobSearchScraper {
       .filter((r): r is PromiseFulfilledResult<Partial<IJob>[]> => r.status === 'fulfilled')
       .flatMap(r => r.value);
 
+    // Post-scrape filtering: remove irrelevant jobs before saving
+    const filtered = this.filterScrapedJobs(allJobs, profile);
+
     await this.close();
-    logger.info(`Found ${allJobs.length} jobs across all platforms`);
-    return allJobs;
+    logger.info(`Found ${allJobs.length} raw jobs, ${filtered.length} after relevance filter`);
+    return filtered;
+  }
+
+  // Filter out irrelevant jobs immediately after scraping
+  private filterScrapedJobs(jobs: Partial<IJob>[], profile: IUserProfile): Partial<IJob>[] {
+    const userSkills = [
+      ...profile.skills.frontend, ...profile.skills.backend,
+      ...profile.skills.database, ...profile.skills.tools, ...profile.skills.orm,
+    ].map(s => s.toLowerCase());
+
+    // Technologies to EXCLUDE — if job title contains these and user doesn't have them
+    const excludeTech = ['java', '.net', 'dotnet', 'c#', 'python', 'ruby', 'php', 'golang', 'go lang', 'rust', 'scala', 'kotlin', 'swift', 'flutter', 'android', 'ios', 'salesforce', 'sap', 'mainframe', 'cobol', 'devops', 'data engineer', 'data scientist', 'machine learning', 'ml engineer', 'ai engineer', 'cloud engineer', 'aws engineer', 'azure engineer'];
+    const userHasTech = excludeTech.filter(t => userSkills.some(s => s.includes(t) || t.includes(s)));
+
+    // Excluded senior titles
+    const excludeTitles = ['lead', 'principal', 'architect', 'manager', 'staff engineer', 'director', 'head of', 'vp ', 'senior staff', 'senior', 'sr.', 'sr ', 'staff', 'distinguished'];
+
+    return jobs.filter(job => {
+      const title = (job.title || '').toLowerCase();
+      const text = `${title} ${(job.skills || []).join(' ')} ${job.description || ''}`.toLowerCase();
+
+      // 1. Exclude senior titles
+      if (excludeTitles.some(t => title.includes(t))) return false;
+
+      // 2. Exclude irrelevant tech stacks (only if user doesn't have that skill)
+      for (const tech of excludeTech) {
+        if (userHasTech.includes(tech)) continue; // user has this skill, don't exclude
+        if (title.includes(tech)) return false; // title says "Java Developer" but user has no Java
+      }
+
+      // 3. Must have at least ONE user skill in title/skills/description
+      const hasRelevance = userSkills.some(skill => text.includes(skill));
+      if (!hasRelevance) {
+        // Exception: generic titles like "Software Engineer" / "Web Developer" are OK
+        const genericTitles = ['software engineer', 'web developer', 'developer', 'programmer'];
+        if (!genericTitles.some(g => title.includes(g))) return false;
+      }
+
+      // 4. Parse and check experience requirement
+      const expParsed = this.parseExperience(job.experience || '');
+      if (expParsed.min > 0) {
+        job.experienceMin = expParsed.min;
+        job.experienceMax = expParsed.max;
+        // If minimum required experience is more than user's exp + 1 year buffer, skip
+        if (expParsed.min > (profile.experience || 1) + 1) return false;
+      }
+
+      return true;
+    });
+  }
+
+  private parseExperience(exp: string): { min: number; max: number } {
+    if (!exp) return { min: 0, max: 0 };
+    // "3-5 Yrs", "2 - 4 years", "1-3 yrs", "0-2 Years"
+    const range = exp.match(/(\d+)\s*[-–to]+\s*(\d+)/i);
+    if (range) return { min: parseInt(range[1]), max: parseInt(range[2]) };
+    // "3+ years", "5 years"
+    const single = exp.match(/(\d+)\s*\+?\s*(?:yr|year)/i);
+    if (single) return { min: parseInt(single[1]), max: parseInt(single[1]) + 2 };
+    return { min: 0, max: 0 };
   }
 
   private parseSalary(salary: string): { min: number; max: number } {

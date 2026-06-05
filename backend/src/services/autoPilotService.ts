@@ -4,6 +4,7 @@ import { User, Job, Application, Settings, Resume } from '../models/mongoose';
 import { jobSearchScraper } from '../scrapers/jobSearchScraper';
 import { jobService } from './jobService';
 import { matchingEngine } from '../ai/matching';
+import { jobScreener, ScreeningResult } from '../ai/jobScreener';
 import { coverLetterGenerator } from '../ai/coverLetter';
 import { IUserProfile, IJob } from '../types';
 import config from '../config';
@@ -120,41 +121,78 @@ export class AutoPilotService {
       skippedSteps.push('match');
       warnings.push('⚠️ Matching skipped — no skills to compare against.');
     } else {
+      // Build user skill set for filtering
+      const userSkills = [
+        ...profile.skills.frontend, ...profile.skills.backend,
+        ...profile.skills.database, ...profile.skills.tools, ...profile.skills.orm,
+      ].map(s => s.toLowerCase());
+
+      // Pre-filter: exclude by title, experience, salary, AND skills (instant, no AI)
+      const candidates = [];
       for (const job of newJobs) {
+        // Filter: excluded titles
+        if (excludeTitles.some(t => job.title.toLowerCase().includes(t.toLowerCase()))) {
+          await Job.findByIdAndUpdate(job._id, { status: 'filtered', matchScore: 0 });
+          continue;
+        }
+        // Filter: max experience
+        if (job.experienceMin && job.experienceMin > maxExperience) {
+          await Job.findByIdAndUpdate(job._id, { status: 'filtered', matchScore: 0 });
+          continue;
+        }
+        // Filter: min salary
+        if (job.salaryMax && job.salaryMax < minSalary) {
+          await Job.findByIdAndUpdate(job._id, { status: 'filtered', matchScore: 0 });
+          continue;
+        }
+        // Filter: skill relevance — job must have at least 1 matching skill OR relevant title
+        const jobText = `${job.title} ${job.skills.join(' ')} ${job.description || ''}`.toLowerCase();
+        const hasSkillOverlap = userSkills.some(skill => jobText.includes(skill));
+        if (!hasSkillOverlap) {
+          await Job.findByIdAndUpdate(job._id, { status: 'filtered', matchScore: 0 });
+          continue;
+        }
+        candidates.push(job);
+      }
+
+      // Batch AI matching (5 jobs per AI call instead of 1)
+      const jobObjs = candidates.map(j => j.toObject() as unknown as IJob);
+
+      // AI Screening: strict filter using LLM to catch Senior roles, wrong tech, etc.
+      const screenResults = await jobScreener.batchScreen(jobObjs, profile, check.settings);
+      const passedScreening = candidates.filter(j => {
+        const id = j._id.toString();
+        const result = screenResults.get(id);
+        if (result && !result.is_match) {
+          Job.findByIdAndUpdate(j._id, { status: 'filtered', matchScore: result.match_score, matchDetails: { verdicts: result.verdicts, reasoning: result.reasoning } }).catch(() => {});
+          return false;
+        }
+        return true;
+      });
+      logger.info(`[AutoPilot] AI screening: ${candidates.length} → ${passedScreening.length} passed`);
+
+      const passedJobObjs = passedScreening.map(j => j.toObject() as unknown as IJob);
+      const matchResults = await matchingEngine.batchMatchJobs(passedJobObjs, profile);
+      logger.info(`[AutoPilot] Matched ${passedScreening.length} candidates in batch`);
+
+      for (const job of passedScreening) {
         try {
-          // Filter: excluded titles
-          if (excludeTitles.some(t => job.title.toLowerCase().includes(t.toLowerCase()))) {
-            await Job.findByIdAndUpdate(job._id, { status: 'filtered', matchScore: 0 });
-            continue;
-          }
-
-          // Filter: max experience (if job has experienceMin parsed)
-          if (job.experienceMin && job.experienceMin > maxExperience) {
-            await Job.findByIdAndUpdate(job._id, { status: 'filtered', matchScore: 0 });
-            continue;
-          }
-
-          // Filter: min salary (if job has salaryMax parsed)
-          if (job.salaryMax && job.salaryMax < minSalary) {
-            await Job.findByIdAndUpdate(job._id, { status: 'filtered', matchScore: 0 });
-            continue;
-          }
-
-          const jobObj = job.toObject() as unknown as IJob;
-          const match = await matchingEngine.calculateMatchScore(jobObj, profile);
+          const id = job._id.toString();
+          const match = matchResults.get(id);
+          if (!match) continue;
 
           if (match.overallScore >= minMatchScore) {
             await Job.findByIdAndUpdate(job._id, {
               status: 'matched', matchScore: match.overallScore, matchDetails: match,
             });
 
-            // 4. Auto-apply (only if credentials exist)
             if (check.hasAnyCreds) {
+              const jobObj = job.toObject() as unknown as IJob;
               const applied = await this.applyToJob(job.url, profile, jobObj);
               if (applied) {
                 await Job.findByIdAndUpdate(job._id, { status: 'applied' });
                 await Application.create({
-                  userId, jobId: job._id.toString(), status: 'submitted',
+                  userId, jobId: id, status: 'submitted',
                   matchScore: match.overallScore, answers: [], notes: 'Auto-applied by CareerPilot',
                 });
                 appliedJobs.push({
